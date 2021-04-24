@@ -1,7 +1,9 @@
 #!/bin/bash
 
 ### Requirements -------------------------------
-### jq, bash 5.x
+### jq 1.6+
+### bash 5.0+
+### AWS CLI v2 (haven't tested with v1)
 ### --------------------------------------------
 
 set -e
