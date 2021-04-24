@@ -1,10 +1,27 @@
 #!/bin/bash
 
-### Requirements -------------------------------
-### jq 1.6+
-### bash 5.0+
-### AWS CLI v2 (haven't tested with v1)
-### --------------------------------------------
+### Requirements --------------------------------------------------------------
+# jq 1.6+
+# bash 5.0+
+# AWS CLI v2 (haven't tested with v1)
+### ---------------------------------------------------------------------------
+
+### Required Environment Variables --------------------------------------------
+# Supports `.env` file
+# IAMLIVE_ADMIN_AWS_ACCESS_KEY_ID       For updating IAM Policy
+# IAMLIVE_ADMIN_AWS_SECRET_ACCESS_KEY   For updating IAM Policy
+# IAMLIVE_USER_AWS_ACCESS_KEY_ID        For executing a command
+# IAMLIVE_USER_AWS_SECRET_ACCESS_KEY    For executing a command
+# IAMLIVE_IAM_POLICY_ARN                IAM Policy to update
+### ---------------------------------------------------------------------------
+
+### Usage ---------------------------------------------------------------------
+# Build the Docker image
+# docker build -t iamlive .
+#
+# ./automate.sh aws s3 ls
+# ./automate.sh cd "${PWD}/terraform-dir/" ; terraform apply -auto-approve
+### Usage ---------------------------------------------------------------------
 
 set -e
 set -o pipefail
