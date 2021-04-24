@@ -26,14 +26,17 @@
 set -e
 set -o pipefail
 
-# Global Variables
-_VERBOSE="${IAMLIVE_VERBOSE:-"true"}"
+
 _DOTENV_PATH="${IAMLIVE_DOTENV_PATH:-"${PWD}/.env"}"
 
 if [[ -f "$_DOTENV_PATH" && $(wc .env -c | cut -d" " -f1) -gt 0  ]]; then
     # export $(cat .env | xargs)
     export $(grep -v '^#' .env | xargs)
 fi
+
+# Global Variables
+_VERBOSE="${IAMLIVE_VERBOSE:-"true"}"
+_DEBUG="${IAMLIVE_DEBUG:-"false"}"
 
 # Credentials
 _ADMIN_AWS_ACCESS_KEY_ID="${IAMLIVE_ADMIN_AWS_ACCESS_KEY_ID:-""}"
@@ -48,6 +51,14 @@ _HTTPS_PROXY="${HTTPS_PROXY:-"http://127.0.0.1:443"}"
 _AWS_CA_BUNDLE="${AWS_CA_BUNDLE:-"$HOME/.iamlive/ca.pem"}"
 
 # App
+if [[ "$_DEBUG" = "true" ]]; then
+    _LOG_FILE_PATH="/tmp/iamlive.log"
+    _CA_DIR_PATH="/root/.iamlive"
+else
+    _LOG_FILE_PATH="/app/iamlive.log"
+    _CA_DIR_PATH="/home/appuser/.iamlive"
+fi
+
 _EXECUTE_COMMAND="${IAMLIVE_EXECUTE_COMMAND:-"$@"}"
 _RETRY_INTERVAL="${IAMLIVE_RETRY_INTERVAL:-"10"}"
 _MAX_ATTEMPTS="${IAMLIVE_MAX_ATTEMPTS:-"20"}"
@@ -75,7 +86,7 @@ msg_log(){
 # App Functions
 copy_ca_from_container(){
     msg_log "Attempting to copy $_AWS_CA_BUNDLE from the container $_CONTAINER_NAME"
-    docker cp "${_CONTAINER_NAME}:/home/appuser/.iamlive/" "$HOME/"
+    docker cp "${_CONTAINER_NAME}:${_CA_DIR_PATH}/" "$HOME/"    
     msg_log "Successfully copied"
 }
 
@@ -146,7 +157,7 @@ delete_iam_policy_versionid(){
 
 
 cleanup_iamlive(){
-    if [[ "$(is_container_running)" = "true" ]]; then
+    if [[ "$(is_container_running)" = "true" && "$_DEBUG" != "true" ]]; then
         msg_log "Removing existing iamlive container"
         docker rm -f iamlive > /dev/null || true
         sleep 1
@@ -185,7 +196,7 @@ start_iamlive(){
         --mode proxy \
         --bind-addr 0.0.0.0:10080 \
         --force-wildcard-resource \
-        --output-file "/app/iamlive.log"
+        --output-file "$_LOG_FILE_PATH"
         msg_log "Waiting $_WAIT_FOR_CONTAINER seconds for iamlive to be ready"
         sleep "$_WAIT_FOR_CONTAINER"
     fi
@@ -257,9 +268,13 @@ execute_command(){
 user_invoke_command(){
     local command_results
     local current_policy_document
-    docker exec "$_CONTAINER_NAME" kill -HUP 1
-    sleep 1
-    current_policy_document="$(docker exec "$_CONTAINER_NAME" cat /app/iamlive.log)"
+
+    if [[ "$_DEBUG" != "true" ]]; then
+        docker exec "$_CONTAINER_NAME" kill -HUP 1
+        sleep 1
+        current_policy_document="$(docker exec "$_CONTAINER_NAME" cat $_LOG_FILE_PATH)"
+    fi
+
     export AWS_ACCESS_KEY_ID="$_USER_AWS_ACCESS_KEY_ID"
     export AWS_SECRET_ACCESS_KEY="$_USER_AWS_SECRET_ACCESS_KEY"
     msg_log "Executing: $_EXECUTE_COMMAND"
@@ -267,13 +282,18 @@ user_invoke_command(){
     command_results="$(execute_command $_EXECUTE_COMMAND 2>&1 || true)"
     echo "$command_results"
 
+    if [[ "$_DEBUG" = "true" ]]; then
+        msg_log "Debug finished"
+        exit 0
+    fi
+
     # Handle AWS CLI
     if [[ "$command_results" =~ (.*AccessDenied.*|fatal.*error.*403) ]]; then
         unset_credentials
         unset_proxy_env_vars
-        msg_log "Getting policy from $_CONTAINER_NAME:/app/iamlive.log"
+        msg_log "Getting policy from $_CONTAINER_NAME:$_LOG_FILE_PATH"
         docker exec "$_CONTAINER_NAME" kill -HUP 1
-        latest_iam_policy_document="$(docker exec "$_CONTAINER_NAME" cat /app/iamlive.log)"
+        latest_iam_policy_document="$(docker exec "$_CONTAINER_NAME" cat $_LOG_FILE_PATH)"
         echo "$latest_iam_policy_document"
         if [[ -z $(echo "$latest_iam_policy_document" | jq -rc '.Statement[]') ]]; then
             msg_error "Empty policy document"
@@ -285,10 +305,10 @@ user_invoke_command(){
     # Handle Terraform CLI
         unset_credentials
         unset_proxy_env_vars
-        msg_log "Getting policy from $_CONTAINER_NAME:/app/iamlive.log"
+        msg_log "Getting policy from $_CONTAINER_NAME:$_LOG_FILE_PATH"
         docker exec "$_CONTAINER_NAME" kill -HUP 1
         sleep 1
-        latest_iam_policy_document="$(docker exec "$_CONTAINER_NAME" cat /app/iamlive.log)"        
+        latest_iam_policy_document="$(docker exec "$_CONTAINER_NAME" cat $_LOG_FILE_PATH)"        
         echo "$latest_iam_policy_document"
         if [[ -z $(echo "$latest_iam_policy_document" | jq -rc '.Statement[]') ]]; then
             msg_error "Empty policy document"
