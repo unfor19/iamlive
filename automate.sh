@@ -6,6 +6,7 @@
 # AWS CLI v2 (haven't tested with v1)
 ### ---------------------------------------------------------------------------
 
+
 ### Required Environment Variables --------------------------------------------
 # Supports `.env` file
 # IAMLIVE_ADMIN_AWS_ACCESS_KEY_ID       For updating IAM Policy
@@ -15,13 +16,48 @@
 # IAMLIVE_IAM_POLICY_ARN                IAM Policy to update
 ### ---------------------------------------------------------------------------
 
+
 ### Usage ---------------------------------------------------------------------
 # Build the Docker image
 # docker build -t iamlive .
-#
+
 # ./automate.sh aws s3 ls
 # ./automate.sh cd "${PWD}/terraform-dir/" ; terraform apply -auto-approve
-### Usage ---------------------------------------------------------------------
+### ---------------------------------------------------------------------------
+
+
+### Live Development In Docker ------------------------------------------------
+# Set DEBUG env var in .env or as env var
+# export DEBUG=true
+
+# Build the Docker image - dev
+# docker build -t iamlive --target dev .
+
+# HOST - Terminal 1
+# docker build -t iamlive -f Dockerfile --target dev  .
+  
+# HOST - Terminal 1
+# docker run -v "$PWD"/:/src/ --workdir=/src -it -p 80:10080 -p 443:10080 --name iamlive  iamlive
+  
+# CONTAINER - Terminal 1
+# go build && ./iamlive  --mode proxy --bind-addr 0.0.0.0:10080 --force-wildcard-resource --output-file "/tmp/iamlive.log"
+
+# HOST - Terminal 2
+# ./automate.sh "cd $PWD/.myterraform ; terraform apply -auto-approve"
+# ./automate.sh aws s3 ls
+
+# HOST - IDE
+# Change "go code"
+
+# CONTAINER - Terminal 1
+# Stop running iamlive (CTRL+C), build and run again
+# go build && ./iamlive  --mode proxy --bind-addr 0.0.0.0:10080 --force-wildcard-resource --output-file "/tmp/iamlive.log"
+# TODO: add "hotreload"
+
+# HOST - Terminal 2
+# ./automate.sh "cd $PWD/.myterraform ; terraform apply -auto-approve"
+# ./automate.sh aws s3 ls
+### ---------------------------------------------------------------------------
 
 set -e
 set -o pipefail
