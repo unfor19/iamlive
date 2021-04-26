@@ -62,14 +62,27 @@ fi
 _EXECUTE_COMMAND="${IAMLIVE_EXECUTE_COMMAND:-"$@"}"
 _RETRY_INTERVAL="${IAMLIVE_RETRY_INTERVAL:-"10"}"
 _MAX_ATTEMPTS="${IAMLIVE_MAX_ATTEMPTS:-"20"}"
-_IAM_POLICY_ARN="${IAMLIVE_IAM_POLICY_ARN:-""}"
 _WAIT_FOR_CONTAINER="${IAMLIVE_WAIT_FOR_CONTAINER:-"5"}"
+_IAM_POLICY_ARN="${IAMLIVE_IAM_POLICY_ARN:-""}"
+
+# Get from env var or from IAM_POLICY_ARN
+_AWS_ACCOUNT_ID="${IAMLIVE_AWS_ACCOUNT_ID:-"$(echo "$_IAM_POLICY_ARN" | cut -d":" -f5)"}"
+_MASKED_AWS_ACCOUNT_ID="${_AWS_ACCOUNT_ID/%????????/********}"
 
 
 # Helper Functions
+sanitize_msg(){
+    local msg="$1"
+    local sanitized
+    sanitized="${msg//$_AWS_ACCOUNT_ID/$_MASKED_AWS_ACCOUNT_ID}"
+    echo "$sanitized"
+}
+
+
 msg_error(){
     local msg="$1"
-    echo -e ">> [ERROR]: $msg"
+    
+    echo -e ">> [ERROR]: $(sanitize_msg "$msg")"
     cleanup_iamlive    
     exit 1
 }
@@ -78,7 +91,7 @@ msg_error(){
 msg_log(){
     local msg="$1"
     if [[ $_VERBOSE = "true" ]]; then
-        echo -e ">> [LOG]: $msg"
+        echo -e ">> [LOG]: $(sanitize_msg "$msg")"
     fi
 }
 
@@ -212,16 +225,10 @@ admin_add_policy(){
     local delete_oldest_versionid_results
     local create_policy_results_initial
     local create_policy_results_final
-    local aws_account_id
-    local hidden_aws_account_id
-    local hidden_iam_policy_arn
     latest_iam_policy_document="$1"
-    aws_account_id=$(echo "$_IAM_POLICY_ARN" | cut -d":" -f5)
-    hidden_aws_account_id="${aws_account_id/%????????/********}"
-    hidden_iam_policy_arn="${_IAM_POLICY_ARN//$aws_account_id/$hidden_aws_account_id}"
     export AWS_ACCESS_KEY_ID="$_ADMIN_AWS_ACCESS_KEY_ID"
     export AWS_SECRET_ACCESS_KEY="$_ADMIN_AWS_SECRET_ACCESS_KEY"
-    msg_log "Creating IAM policy version to $hidden_iam_policy_arn"
+    msg_log "Creating IAM policy version to $_IAM_POLICY_ARN"
     unset_proxy_env_vars
     create_policy_results_initial="$(aws iam create-policy-version \
         --policy-arn "$_IAM_POLICY_ARN" \
@@ -265,15 +272,26 @@ execute_command(){
 }
 
 
+decode_aws_error_msg(){
+    local encoded_msg="$1"
+    export AWS_ACCESS_KEY_ID="$2"
+    export AWS_SECRET_ACCESS_KEY="$3"  
+    unset_proxy_env_vars
+    if [[ -z "$encoded_msg" ]]; then
+        msg_error "Encoded message is empty."
+    fi
+    aws sts decode-authorization-message \
+        --encoded-message "$encoded_msg" | jq
+}
+
+
 user_invoke_command(){
     local command_results
-    local current_policy_document
-
-    if [[ "$_DEBUG" != "true" ]]; then
-        docker exec "$_CONTAINER_NAME" kill -HUP 1
-        sleep 1
-        current_policy_document="$(docker exec "$_CONTAINER_NAME" cat $_LOG_FILE_PATH)"
-    fi
+    local iamlive_policy_document
+    local decoded_error_msg
+    declare -a decoded_error_msgs
+    local diff_output
+    local latest_iam_policy_document
 
     export AWS_ACCESS_KEY_ID="$_USER_AWS_ACCESS_KEY_ID"
     export AWS_SECRET_ACCESS_KEY="$_USER_AWS_SECRET_ACCESS_KEY"
@@ -282,9 +300,10 @@ user_invoke_command(){
     command_results="$(execute_command $_EXECUTE_COMMAND 2>&1 || true)"
     echo "$command_results"
 
-    if [[ "$_DEBUG" = "true" ]]; then
-        msg_log "Debug finished"
-        exit 0
+    if [[ "$_DEBUG" != "true" ]]; then
+        docker exec "$_CONTAINER_NAME" kill -HUP 1
+        sleep 2
+        iamlive_policy_document="$(docker exec "$_CONTAINER_NAME" cat $_LOG_FILE_PATH)"
     fi
 
     # Handle AWS CLI
@@ -300,7 +319,7 @@ user_invoke_command(){
         fi
         admin_add_policy "$latest_iam_policy_document"
         msg_log "Differences between current and latest policies:"
-        diff <(echo "$current_policy_document") <(echo "$latest_iam_policy_document") || true
+        diff <(echo "$iamlive_policy_document") <(echo "$latest_iam_policy_document") || true
     elif [[ "$command_results" =~ .*status.*code.*403 ]]; then
     # Handle Terraform CLI
         unset_credentials
@@ -314,8 +333,27 @@ user_invoke_command(){
             msg_error "Empty policy document"
         fi
         admin_add_policy "$latest_iam_policy_document"
-        msg_log "Differences between current and latest policies:"
-        diff <(echo "$current_policy_document") <(echo "$latest_iam_policy_document") || true
+
+        diff_output="$(diff <(echo "$iamlive_policy_document") <(echo "$latest_iam_policy_document") || true)"
+        if [[ -n "$diff_output" ]]; then
+            msg_log "Differences between current and latest policies:"        
+            echo "$diff_output"
+        elif [[ -z "$diff_output" && "$command_results" =~ "Encoded authorization failure message" ]]; then
+            msg_log "No differences between current and latest policies"
+            msg_log "Attempting to decode encoded messages ..."
+            readarray -t encoded_error_msgs <<<"$command_results"
+            for encoded_error_msg in "${encoded_error_msgs[@]}"; do
+                encoded_error_msg="${encoded_error_msg##* }" # Clean prefix
+                if [[ "${#encoded_error_msg}" -ge 512 ]]; then
+                    decoded_error_msg="$(decode_aws_error_msg "$encoded_error_msg" "$_ADMIN_AWS_ACCESS_KEY_ID" "$_ADMIN_AWS_SECRET_ACCESS_KEY")"
+                    if [[ ! "${decoded_error_msgs[*]}" =~ ${decoded_error_msg} ]]; then
+                        decoded_error_msgs+=("$decoded_error_msg")
+                    fi
+                fi
+            done
+            msg_log "Missing permissions:\n$(echo "${decoded_error_msgs[@]}" | jq '.DecodedMessage | fromjson | {action: .context.action, resource: .context.resource}')"
+            msg_error "TODO: Handle missing permissions"
+        fi
     else
         msg_log "Unknown output - check the logs"
         exit 0
