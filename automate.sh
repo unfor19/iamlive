@@ -346,7 +346,7 @@ user_invoke_command(){
                 encoded_error_msg="${encoded_error_msg##* }" # Clean prefix
                 if [[ "${#encoded_error_msg}" -ge 512 ]]; then
                     decoded_error_msg="$(decode_aws_error_msg "$encoded_error_msg" "$_ADMIN_AWS_ACCESS_KEY_ID" "$_ADMIN_AWS_SECRET_ACCESS_KEY")"
-                    if [[ ! "${decoded_error_msgs[*]}" =~ ${decoded_error_msg} ]]; then
+                    if [[ ! " ${decoded_error_msgs[*]} " =~ " ${decoded_error_msg} " ]]; then
                         decoded_error_msgs+=("$decoded_error_msg")
                     fi
                 fi
